@@ -25,8 +25,11 @@ const protectedRoles = new Map();
 // Store protected users per guild: { guildId: Set of userIds }
 const protectedUsers = new Map();
 
-// Store timeout targets for button interactions: { messageId: { userId, guildId } }
+// Store timeout targets for button interactions: { timeoutId: { userId, guildId } }
 const timeoutTargets = new Map();
+
+// Counter for generating unique timeout IDs
+let timeoutIdCounter = 0;
 
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
@@ -63,8 +66,7 @@ client.once(Events.ClientReady, async (readyClient) => {
       body: commands,
     });
     console.log('Slash commands registered!');
-  } catch (err) {
-    console.error('Failed to register slash commands:', err);
+  } catch (err) {\n    console.error('Failed to register slash commands:', err);
   }
 });
 
@@ -140,8 +142,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return interaction.reply({ content: "Only the server owner can remove timeouts.", ephemeral: true });
       }
 
-      const messageId = interaction.message.id;
-      const target = timeoutTargets.get(messageId);
+      const timeoutId = interaction.customId.replace('remove_timeout_', '');
+      const target = timeoutTargets.get(timeoutId);
 
       if (!target) {
         return interaction.reply({ content: 'This timeout has already been removed or expired.', ephemeral: true });
@@ -155,7 +157,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await interaction.reply({ content: `Removed the timeout on **${member.user.tag}**.`, ephemeral: true });
 
         // Remove the button after timeout is removed
-        timeoutTargets.delete(messageId);
+        timeoutTargets.delete(timeoutId);
         const newRow = new ActionRowBuilder().addComponents(
           new ButtonBuilder()
             .setCustomId('remove_timeout_expired')
@@ -270,16 +272,19 @@ async function punishPing(message, member, reason) {
   try {
     await member.timeout(TIMEOUT_MS, `Pinged the ${reason}`);
 
-    // Create the button with a unique ID based on message ID
+    // Generate unique timeout ID instead of using message ID
+    const timeoutId = String(++timeoutIdCounter);
+
+    // Create the button with the unique timeout ID
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setCustomId(`remove_timeout_${message.id}`)
+        .setCustomId(`remove_timeout_${timeoutId}`)
         .setLabel('Remove')
         .setStyle(ButtonStyle.Success)
     );
 
     // Store the timeout target for button interaction
-    timeoutTargets.set(message.id, { userId: member.id, guildId: message.guildId });
+    timeoutTargets.set(timeoutId, { userId: member.id, guildId: message.guildId });
 
     // Send DM to timed out user (no button)
     await message.author.send({
@@ -297,7 +302,7 @@ async function punishPing(message, member, reason) {
 
     // Clean up stored data after 5 minutes (timeout expires)
     setTimeout(() => {
-      timeoutTargets.delete(message.id);
+      timeoutTargets.delete(timeoutId);
     }, TIMEOUT_MS);
   } catch (err) {
     console.error('Could not time out member:', err);
