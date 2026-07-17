@@ -66,7 +66,8 @@ client.once(Events.ClientReady, async (readyClient) => {
       body: commands,
     });
     console.log('Slash commands registered!');
-  } catch (err) {\n    console.error('Failed to register slash commands:', err);
+  } catch (err) {
+    console.error('Failed to register slash commands:', err);
   }
 });
 
