@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, Events, GatewayIntentBits, PermissionsBitField, SlashCommandBuilder, REST, Routes, EmbedBuilder } = require('discord.js');
+const { Client, Events, GatewayIntentBits, PermissionsBitField, SlashCommandBuilder, REST, Routes, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 
 const { BOT_TOKEN, OWNER_ID, OWNER_ROLE_ID } = process.env;
 const PREFIX = process.env.PREFIX || '!';
@@ -24,6 +24,9 @@ const protectedRoles = new Map();
 
 // Store protected users per guild: { guildId: Set of userIds }
 const protectedUsers = new Map();
+
+// Store timeout targets for button interactions: { messageId: { userId, guildId } }
+const timeoutTargets = new Map();
 
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
@@ -66,65 +69,108 @@ client.once(Events.ClientReady, async (readyClient) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
+  // Handle slash commands
+  if (interaction.isChatInputCommand()) {
+    if (interaction.commandName === 'setrole') {
+      const role = interaction.options.getRole('role');
+      const guildId = interaction.guildId;
 
-  if (interaction.commandName === 'setrole') {
-    const role = interaction.options.getRole('role');
-    const guildId = interaction.guildId;
+      if (!protectedRoles.has(guildId)) {
+        protectedRoles.set(guildId, new Set());
+      }
 
-    if (!protectedRoles.has(guildId)) {
-      protectedRoles.set(guildId, new Set());
+      const roles = protectedRoles.get(guildId);
+
+      if (roles.has(role.id)) {
+        roles.delete(role.id);
+        const embed = new EmbedBuilder()
+          .setColor(0xff6b6b)
+          .setTitle('Role Unprotected')
+          .setDescription(`${role.name} is no longer protected.`)
+          .setTimestamp();
+        await interaction.reply({ embeds: [embed] });
+      } else {
+        roles.add(role.id);
+        const embed = new EmbedBuilder()
+          .setColor(0x51cf66)
+          .setTitle('Role Protected')
+          .setDescription(
+            `${role.name} is now protected. Anyone mentioning this role or users with this role will be timed out for 5 minutes.`
+          )
+          .setTimestamp();
+        await interaction.reply({ embeds: [embed] });
+      }
+    } else if (interaction.commandName === 'selectperson') {
+      const user = interaction.options.getUser('user');
+      const guildId = interaction.guildId;
+
+      if (!protectedUsers.has(guildId)) {
+        protectedUsers.set(guildId, new Set());
+      }
+
+      const users = protectedUsers.get(guildId);
+
+      if (users.has(user.id)) {
+        users.delete(user.id);
+        const embed = new EmbedBuilder()
+          .setColor(0xff6b6b)
+          .setTitle('Person Unprotected')
+          .setDescription(`${user.username} is no longer protected.`)
+          .setTimestamp();
+        await interaction.reply({ embeds: [embed] });
+      } else {
+        users.add(user.id);
+        const embed = new EmbedBuilder()
+          .setColor(0x51cf66)
+          .setTitle('Person Protected')
+          .setDescription(
+            `${user.username} is now protected. Anyone mentioning this person will be timed out for 5 minutes.`
+          )
+          .setTimestamp();
+        await interaction.reply({ embeds: [embed] });
+      }
     }
+  }
 
-    const roles = protectedRoles.get(guildId);
+  // Handle button clicks
+  if (interaction.isButton()) {
+    if (interaction.customId.startsWith('remove_timeout_')) {
+      // Only owner can use the button
+      if (interaction.user.id !== OWNER_ID) {
+        return interaction.reply({ content: "Only the server owner can remove timeouts.", ephemeral: true });
+      }
 
-    if (roles.has(role.id)) {
-      roles.delete(role.id);
-      const embed = new EmbedBuilder()
-        .setColor(0xff6b6b)
-        .setTitle('Role Unprotected')
-        .setDescription(`${role.name} is no longer protected.`)
-        .setTimestamp();
-      await interaction.reply({ embeds: [embed] });
-    } else {
-      roles.add(role.id);
-      const embed = new EmbedBuilder()
-        .setColor(0x51cf66)
-        .setTitle('Role Protected')
-        .setDescription(
-          `${role.name} is now protected. Anyone mentioning this role or users with this role will be timed out for 5 minutes.`
-        )
-        .setTimestamp();
-      await interaction.reply({ embeds: [embed] });
-    }
-  } else if (interaction.commandName === 'selectperson') {
-    const user = interaction.options.getUser('user');
-    const guildId = interaction.guildId;
+      const messageId = interaction.message.id;
+      const target = timeoutTargets.get(messageId);
 
-    if (!protectedUsers.has(guildId)) {
-      protectedUsers.set(guildId, new Set());
-    }
+      if (!target) {
+        return interaction.reply({ content: 'This timeout has already been removed or expired.', ephemeral: true });
+      }
 
-    const users = protectedUsers.get(guildId);
+      try {
+        const guild = await client.guilds.fetch(target.guildId);
+        const member = await guild.members.fetch(target.userId);
 
-    if (users.has(user.id)) {
-      users.delete(user.id);
-      const embed = new EmbedBuilder()
-        .setColor(0xff6b6b)
-        .setTitle('Person Unprotected')
-        .setDescription(`${user.username} is no longer protected.`)
-        .setTimestamp();
-      await interaction.reply({ embeds: [embed] });
-    } else {
-      users.add(user.id);
-      const embed = new EmbedBuilder()
-        .setColor(0x51cf66)
-        .setTitle('Person Protected')
-        .setDescription(
-          `${user.username} is now protected. Anyone mentioning this person will be timed out for 5 minutes.`
-        )
-        .setTimestamp();
-      await interaction.reply({ embeds: [embed] });
+        await member.timeout(null, `Timeout removed by ${interaction.user.tag}`);
+        await interaction.reply({ content: `Removed the timeout on **${member.user.tag}**.`, ephemeral: true });
+
+        // Remove the button after timeout is removed
+        timeoutTargets.delete(messageId);
+        const newRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId('remove_timeout_expired')
+            .setLabel('Remove')
+            .setStyle(ButtonStyle.Success)
+            .setDisabled(true)
+        );
+        await interaction.message.edit({ components: [newRow] });
+      } catch (err) {
+        console.error('Could not remove timeout via button:', err);
+        await interaction.reply({
+          content: "Couldn't remove that timeout — make sure my role is above theirs and I have the **Moderate Members** permission.",
+          ephemeral: true,
+        });
+      }
     }
   }
 });
@@ -223,7 +269,27 @@ async function punishPing(message, member, reason) {
 
   try {
     await member.timeout(TIMEOUT_MS, `Pinged the ${reason}`);
-    await message.reply(`${message.author}, you're timed out for 5 minutes for pinging the ${reason}.`);
+
+    // Create the button with a unique ID based on message ID
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`remove_timeout_${message.id}`)
+        .setLabel('Remove')
+        .setStyle(ButtonStyle.Success)
+    );
+
+    // Store the timeout target for button interaction
+    timeoutTargets.set(message.id, { userId: member.id, guildId: message.guildId });
+
+    const replyMsg = await message.reply({
+      content: `${message.author}, you're timed out for 5 minutes for pinging the ${reason}.`,
+      components: [row],
+    });
+
+    // Clean up stored data after 5 minutes (timeout expires)
+    setTimeout(() => {
+      timeoutTargets.delete(message.id);
+    }, TIMEOUT_MS);
   } catch (err) {
     console.error('Could not time out member:', err);
   }
