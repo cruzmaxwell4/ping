@@ -1,0 +1,16 @@
+{
+  "name": "owner-guard-bot",
+  "version": "1.0.0",
+  "description": "Discord bot that times out anyone who pings the owner role, with an owner-only command to undo it.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "discord.js": "^14.27.0",
+    "dotenv": "^16.4.5"
+  }
+}
