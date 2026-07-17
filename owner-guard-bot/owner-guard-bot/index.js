@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, Events, GatewayIntentBits, PermissionsBitField } = require('discord.js');
+const { Client, Events, GatewayIntentBits, PermissionsBitField, SlashCommandBuilder, REST, Routes, EmbedBuilder } = require('discord.js');
 
 const { BOT_TOKEN, OWNER_ID, OWNER_ROLE_ID } = process.env;
 const PREFIX = process.env.PREFIX || '!';
@@ -19,8 +19,72 @@ const client = new Client({
   ],
 });
 
-client.once(Events.ClientReady, (readyClient) => {
+// Store protected roles per guild: { guildId: Set of roleIds }
+const protectedRoles = new Map();
+
+client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
+
+  // Register slash commands
+  const commands = [
+    new SlashCommandBuilder()
+      .setName('setrole')
+      .setDescription('Protect a role from being pinged (5min timeout on ping)')
+      .addRoleOption((option) =>
+        option
+          .setName('role')
+          .setDescription('The role to protect')
+          .setRequired(true)
+      )
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild),
+  ];
+
+  const rest = new REST().setToken(BOT_TOKEN);
+
+  try {
+    console.log('Registering slash commands...');
+    await rest.put(Routes.applicationCommands(readyClient.user.id), {
+      body: commands,
+    });
+    console.log('Slash commands registered!');
+  } catch (err) {
+    console.error('Failed to register slash commands:', err);
+  }
+});
+
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+
+  if (interaction.commandName === 'setrole') {
+    const role = interaction.options.getRole('role');
+    const guildId = interaction.guildId;
+
+    if (!protectedRoles.has(guildId)) {
+      protectedRoles.set(guildId, new Set());
+    }
+
+    const roles = protectedRoles.get(guildId);
+
+    if (roles.has(role.id)) {
+      roles.delete(role.id);
+      const embed = new EmbedBuilder()
+        .setColor(0xff6b6b)
+        .setTitle('Role Unprotected')
+        .setDescription(`${role.name} is no longer protected.`)
+        .setTimestamp();
+      await interaction.reply({ embeds: [embed] });
+    } else {
+      roles.add(role.id);
+      const embed = new EmbedBuilder()
+        .setColor(0x51cf66)
+        .setTitle('Role Protected')
+        .setDescription(
+          `${role.name} is now protected. Anyone mentioning this role or users with this role will be timed out for 5 minutes.`
+        )
+        .setTimestamp();
+      await interaction.reply({ embeds: [embed] });
+    }
+  }
 });
 
 client.on(Events.MessageCreate, async (message) => {
@@ -30,9 +94,39 @@ client.on(Events.MessageCreate, async (message) => {
     const member = message.member ?? (await message.guild.members.fetch(message.author.id).catch(() => null));
     if (!member) return;
 
+    // --- Check protected roles ---
+    const guildId = message.guildId;
+    let shouldTimeout = false;
+
+    if (protectedRoles.has(guildId)) {
+      const protectedSet = protectedRoles.get(guildId);
+
+      // Check if message mentions a protected role
+      for (const [roleId] of message.mentions.roles) {
+        if (protectedSet.has(roleId)) {
+          shouldTimeout = true;
+          break;
+        }
+      }
+
+      // Check if message author has a protected role
+      if (!shouldTimeout) {
+        for (const [roleId] of member.roles.cache) {
+          if (protectedSet.has(roleId)) {
+            shouldTimeout = true;
+            break;
+          }
+        }
+      }
+
+      if (shouldTimeout) {
+        await punishPing(message, member, 'protected role');
+      }
+    }
+
     // --- Core feature: pinging the owner role = 5 minute timeout ---
     if (message.mentions.roles.has(OWNER_ROLE_ID)) {
-      await punishPing(message, member);
+      await punishPing(message, member, 'owner role');
     }
 
     // --- Commands ---
@@ -50,6 +144,7 @@ client.on(Events.MessageCreate, async (message) => {
           `\`${PREFIX}ping\` — check if the bot's alive`,
           `\`${PREFIX}help\` — show this list`,
           `\`${PREFIX}untimeout @user\` — remove a timeout (owner only)`,
+          `\`/setrole <role>\` — protect/unprotect a role from pings (manage guild only)`,
         ].join('\n'),
       );
     } else if (command === 'untimeout') {
@@ -62,13 +157,13 @@ client.on(Events.MessageCreate, async (message) => {
 
 // Times out whoever pinged the owner role — unless they're the real owner or an admin
 // (Discord's API blocks timing out admins anyway, so we check first instead of erroring).
-async function punishPing(message, member) {
+async function punishPing(message, member, reason) {
   if (message.author.id === OWNER_ID) return;
   if (member.permissions.has(PermissionsBitField.Flags.Administrator)) return;
 
   try {
-    await member.timeout(TIMEOUT_MS, 'Pinged the owner role');
-    await message.reply(`${message.author}, you're timed out for 5 minutes for pinging the owner role.`);
+    await member.timeout(TIMEOUT_MS, `Pinged the ${reason}`);
+    await message.reply(`${message.author}, you're timed out for 5 minutes for pinging the ${reason}.`);
   } catch (err) {
     console.error('Could not time out member:', err);
   }
@@ -101,3 +196,4 @@ async function handleUntimeout(message, args) {
 }
 
 client.login(BOT_TOKEN);
+
