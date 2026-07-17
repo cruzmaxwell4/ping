@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, Events, GatewayIntentBits, PermissionsBitField, SlashCommandBuilder, REST, Routes, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { Client, Events, GatewayIntentBits, PermissionsBitField, SlashCommandBuilder, REST, Routes, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType } = require('discord.js');
 
 const { BOT_TOKEN, OWNER_ID, OWNER_ROLE_ID } = process.env;
 const PREFIX = process.env.PREFIX || '!';
@@ -24,6 +24,9 @@ const protectedRoles = new Map();
 
 // Store protected users per guild: { guildId: Set of userIds }
 const protectedUsers = new Map();
+
+// Store accept channels per guild: { guildId: Set of channelIds }
+const acceptChannels = new Map();
 
 // Store timeout targets for button interactions: { timeoutId: { userId, guildId } }
 const timeoutTargets = new Map();
@@ -56,6 +59,17 @@ client.once(Events.ClientReady, async (readyClient) => {
           .setRequired(true)
       )
       .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild),
+    new SlashCommandBuilder()
+      .setName('acceptchannel')
+      .setDescription('Allow people to ping the owner in this channel without timeout (owner only)')
+      .addChannelOption((option) =>
+        option
+          .setName('channel')
+          .setDescription('The channel to accept pings in')
+          .setRequired(true)
+          .addChannelTypes(ChannelType.GuildText)
+      )
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   ];
 
   const rest = new REST().setToken(BOT_TOKEN);
@@ -132,6 +146,38 @@ client.on(Events.InteractionCreate, async (interaction) => {
           .setTimestamp();
         await interaction.reply({ embeds: [embed] });
       }
+    } else if (interaction.commandName === 'acceptchannel') {
+      // Owner only check
+      if (interaction.user.id !== OWNER_ID) {
+        return interaction.reply({ content: "Only the server owner can use this command.", ephemeral: true });
+      }
+
+      const channel = interaction.options.getChannel('channel');
+      const guildId = interaction.guildId;
+
+      if (!acceptChannels.has(guildId)) {
+        acceptChannels.set(guildId, new Set());
+      }
+
+      const channels = acceptChannels.get(guildId);
+
+      if (channels.has(channel.id)) {
+        channels.delete(channel.id);
+        const embed = new EmbedBuilder()
+          .setColor(0xff6b6b)
+          .setTitle('Channel Disabled')
+          .setDescription(`${channel.name} is no longer an accept channel. Pings here will timeout.`)
+          .setTimestamp();
+        await interaction.reply({ embeds: [embed] });
+      } else {
+        channels.add(channel.id);
+        const embed = new EmbedBuilder()
+          .setColor(0x51cf66)
+          .setTitle('Channel Accepted')
+          .setDescription(`${channel.name} is now an accept channel. People can ping the owner here without timeout.`)
+          .setTimestamp();
+        await interaction.reply({ embeds: [embed] });
+      }
     }
   }
 
@@ -185,8 +231,18 @@ client.on(Events.MessageCreate, async (message) => {
     const member = message.member ?? (await message.guild.members.fetch(message.author.id).catch(() => null));
     if (!member) return;
 
-    // --- Check protected roles ---
     const guildId = message.guildId;
+    const channelId = message.channelId;
+
+    // Check if this message is in an accept channel
+    const isInAcceptChannel = acceptChannels.has(guildId) && acceptChannels.get(guildId).has(channelId);
+
+    // If in accept channel and pinging owner, don't timeout
+    if (isInAcceptChannel && message.mentions.roles.has(OWNER_ROLE_ID)) {
+      return;
+    }
+
+    // --- Check protected roles ---
     let shouldTimeout = false;
 
     if (protectedRoles.has(guildId)) {
@@ -232,8 +288,8 @@ client.on(Events.MessageCreate, async (message) => {
       }
     }
 
-    // --- Core feature: pinging the owner role = 5 minute timeout ---
-    if (message.mentions.roles.has(OWNER_ROLE_ID)) {
+    // --- Core feature: pinging the owner role = 5 minute timeout (unless in accept channel) ---
+    if (message.mentions.roles.has(OWNER_ROLE_ID) && !isInAcceptChannel) {
       await punishPing(message, member, 'owner role');
     }
 
@@ -254,6 +310,7 @@ client.on(Events.MessageCreate, async (message) => {
           `\`${PREFIX}untimeout @user\` — remove a timeout (owner only)`,
           `\`/setrole <role>\` — protect/unprotect a role from pings (manage guild only)`,
           `\`/selectperson <user>\` — protect/unprotect a person from pings (manage guild only)`,
+          `\`/acceptchannel <channel>\` — allow pinging owner in this channel (owner only)`,
         ].join('\n'),
       );
     } else if (command === 'untimeout') {
