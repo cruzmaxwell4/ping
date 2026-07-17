@@ -176,8 +176,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 });
 
 client.on(Events.MessageCreate, async (message) => {
-  try {
-    if (message.author.bot || !message.guild) return;
+  try {\n    if (message.author.bot || !message.guild) return;
 
     const member = message.member ?? (await message.guild.members.fetch(message.author.id).catch(() => null));
     if (!member) return;
@@ -246,8 +245,7 @@ client.on(Events.MessageCreate, async (message) => {
       await message.reply(
         [
           `**Commands** (prefix: \`${PREFIX}\`)`,
-          `\`${PREFIX}ping\` — check if the bot's alive`,
-          `\`${PREFIX}help\` — show this list`,
+          `\`${PREFIX}ping\` — check if the bot's alive`,\n          `\`${PREFIX}help\` — show this list`,
           `\`${PREFIX}untimeout @user\` — remove a timeout (owner only)`,
           `\`/setrole <role>\` — protect/unprotect a role from pings (manage guild only)`,
           `\`/selectperson <user>\` — protect/unprotect a person from pings (manage guild only)`,
@@ -281,9 +279,17 @@ async function punishPing(message, member, reason) {
     // Store the timeout target for button interaction
     timeoutTargets.set(message.id, { userId: member.id, guildId: message.guildId });
 
-    const replyMsg = await message.reply({
+    // Send ephemeral (private) message to owner with the button
+    await message.author.send({
       content: `${message.author}, you're timed out for 5 minutes for pinging the ${reason}.`,
       components: [row],
+    }).catch(() => {
+      // If DM fails, send as ephemeral reply in channel
+      message.reply({
+        content: `${message.author}, you're timed out for 5 minutes for pinging the ${reason}.`,
+        components: [row],
+        ephemeral: true,
+      });
     });
 
     // Clean up stored data after 5 minutes (timeout expires)
