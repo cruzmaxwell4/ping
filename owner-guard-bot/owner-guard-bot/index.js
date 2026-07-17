@@ -281,17 +281,18 @@ async function punishPing(message, member, reason) {
     // Store the timeout target for button interaction
     timeoutTargets.set(message.id, { userId: member.id, guildId: message.guildId });
 
-    // Send ephemeral (private) message to user with the button
+    // Send DM to timed out user (no button)
     await message.author.send({
-      content: `${message.author}, you're timed out for 5 minutes for pinging the ${reason}.`,
-      components: [row],
+      content: `You've been timed out for 5 minutes for pinging the ${reason}.`,
     }).catch(() => {
-      // If DM fails, send as ephemeral reply in channel
-      message.reply({
-        content: `${message.author}, you're timed out for 5 minutes for pinging the ${reason}.`,
-        components: [row],
-        ephemeral: true,
-      });
+      // If DM fails, silently ignore (owner message will show in chat)
+    });
+
+    // Send ephemeral (only owner sees) message in chat with Remove button
+    const ownerMessage = await message.reply({
+      content: `${message.author} timed out for pinging the ${reason}.`,
+      components: [row],
+      ephemeral: true,
     });
 
     // Clean up stored data after 5 minutes (timeout expires)
