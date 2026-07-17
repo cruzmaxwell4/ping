@@ -22,6 +22,9 @@ const client = new Client({
 // Store protected roles per guild: { guildId: Set of roleIds }
 const protectedRoles = new Map();
 
+// Store protected users per guild: { guildId: Set of userIds }
+const protectedUsers = new Map();
+
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
 
@@ -34,6 +37,16 @@ client.once(Events.ClientReady, async (readyClient) => {
         option
           .setName('role')
           .setDescription('The role to protect')
+          .setRequired(true)
+      )
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild),
+    new SlashCommandBuilder()
+      .setName('selectperson')
+      .setDescription('Protect a person from being pinged (5min timeout on ping)')
+      .addUserOption((option) =>
+        option
+          .setName('user')
+          .setDescription('The person to protect')
           .setRequired(true)
       )
       .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild),
@@ -84,6 +97,35 @@ client.on(Events.InteractionCreate, async (interaction) => {
         .setTimestamp();
       await interaction.reply({ embeds: [embed] });
     }
+  } else if (interaction.commandName === 'selectperson') {
+    const user = interaction.options.getUser('user');
+    const guildId = interaction.guildId;
+
+    if (!protectedUsers.has(guildId)) {
+      protectedUsers.set(guildId, new Set());
+    }
+
+    const users = protectedUsers.get(guildId);
+
+    if (users.has(user.id)) {
+      users.delete(user.id);
+      const embed = new EmbedBuilder()
+        .setColor(0xff6b6b)
+        .setTitle('Person Unprotected')
+        .setDescription(`${user.username} is no longer protected.`)
+        .setTimestamp();
+      await interaction.reply({ embeds: [embed] });
+    } else {
+      users.add(user.id);
+      const embed = new EmbedBuilder()
+        .setColor(0x51cf66)
+        .setTitle('Person Protected')
+        .setDescription(
+          `${user.username} is now protected. Anyone mentioning this person will be timed out for 5 minutes.`
+        )
+        .setTimestamp();
+      await interaction.reply({ embeds: [embed] });
+    }
   }
 });
 
@@ -124,6 +166,23 @@ client.on(Events.MessageCreate, async (message) => {
       }
     }
 
+    // --- Check protected users ---
+    if (protectedUsers.has(guildId)) {
+      const protectedSet = protectedUsers.get(guildId);
+
+      // Check if message mentions a protected user
+      for (const [userId] of message.mentions.users) {
+        if (protectedSet.has(userId)) {
+          shouldTimeout = true;
+          break;
+        }
+      }
+
+      if (shouldTimeout) {
+        await punishPing(message, member, 'protected person');
+      }
+    }
+
     // --- Core feature: pinging the owner role = 5 minute timeout ---
     if (message.mentions.roles.has(OWNER_ROLE_ID)) {
       await punishPing(message, member, 'owner role');
@@ -145,6 +204,7 @@ client.on(Events.MessageCreate, async (message) => {
           `\`${PREFIX}help\` — show this list`,
           `\`${PREFIX}untimeout @user\` — remove a timeout (owner only)`,
           `\`/setrole <role>\` — protect/unprotect a role from pings (manage guild only)`,
+          `\`/selectperson <user>\` — protect/unprotect a person from pings (manage guild only)`,
         ].join('\n'),
       );
     } else if (command === 'untimeout') {
@@ -155,7 +215,7 @@ client.on(Events.MessageCreate, async (message) => {
   }
 });
 
-// Times out whoever pinged the owner role — unless they're the real owner or an admin
+// Times out whoever pinged protected role/person/owner — unless they're the real owner or an admin
 // (Discord's API blocks timing out admins anyway, so we check first instead of erroring).
 async function punishPing(message, member, reason) {
   if (message.author.id === OWNER_ID) return;
