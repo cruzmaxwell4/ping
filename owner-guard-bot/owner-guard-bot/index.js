@@ -1,12 +1,12 @@
 require('dotenv').config();
 const { Client, Events, GatewayIntentBits, PermissionsBitField, SlashCommandBuilder, REST, Routes, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType } = require('discord.js');
 
-const { BOT_TOKEN, OWNER_ID, OWNER_ROLE_ID } = process.env;
+const { BOT_TOKEN, OWNER_ID, OWNER_ROLE_ID, OWNER_SERVER_ID } = process.env;
 const PREFIX = process.env.PREFIX || '!';
 const TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
-if (!BOT_TOKEN || !OWNER_ID || !OWNER_ROLE_ID) {
-  console.error('Missing BOT_TOKEN, OWNER_ID, or OWNER_ROLE_ID — check your environment variables.');
+if (!BOT_TOKEN || !OWNER_ID || !OWNER_ROLE_ID || !OWNER_SERVER_ID) {
+  console.error('Missing BOT_TOKEN, OWNER_ID, OWNER_ROLE_ID, or OWNER_SERVER_ID — check your environment variables.');
   process.exit(1);
 }
 
@@ -82,6 +82,16 @@ client.once(Events.ClientReady, async (readyClient) => {
     console.log('Slash commands registered!');
   } catch (err) {
     console.error('Failed to register slash commands:', err);
+  }
+});
+
+client.on(Events.GuildCreate, async (guild) => {
+  // If bot joins a server that's not the owner's server, leave immediately
+  if (guild.id !== OWNER_SERVER_ID) {
+    console.log(`Leaving unauthorized server: ${guild.name} (${guild.id})`);
+    await guild.leave();
+  } else {
+    console.log(`Joined authorized server: ${guild.name}`);
   }
 });
 
