@@ -5,8 +5,7 @@ const { Client, Events, GatewayIntentBits, PermissionsBitField, SlashCommandBuil
 const { BOT_TOKEN, OWNER_ID, OWNER_ROLE_ID, OWNER_SERVER_ID } = process.env;
 const PREFIX = process.env.PREFIX || '!';
 const WARN_THRESHOLD = 2; // 2 warnings before timeout
-const FIRST_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-const SECOND_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const WARNING_RESET_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 if (!BOT_TOKEN || !OWNER_ID || !OWNER_ROLE_ID || !OWNER_SERVER_ID) {
@@ -69,7 +68,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   const commands = [
     new SlashCommandBuilder()
       .setName('setrole')
-      .setDescription('Protect a role from being pinged (2 warnings, then 15min timeout)')
+      .setDescription('Protect a role from being pinged (2 warnings, then 10min timeout)')
       .addRoleOption((option) =>
         option
           .setName('role')
@@ -79,7 +78,7 @@ client.once(Events.ClientReady, async (readyClient) => {
       .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild),
     new SlashCommandBuilder()
       .setName('selectperson')
-      .setDescription('Protect a person from being pinged (2 warnings, then 15min timeout)')
+      .setDescription('Protect a person from being pinged (2 warnings, then 10min timeout)')
       .addUserOption((option) =>
         option
           .setName('user')
@@ -158,7 +157,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         const embed = new EmbedBuilder()
           .setColor(0x51cf66)
           .setTitle('Role Protected')
-          .setDescription(`${role.name} is now protected. Users get 2 warnings, then 15 minute timeout.`)
+          .setDescription(`${role.name} is now protected. Users get 2 warnings, then 10 minute timeout.`)
           .setTimestamp();
         await interaction.reply({ embeds: [embed] });
       }
@@ -188,7 +187,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         const embed = new EmbedBuilder()
           .setColor(0x51cf66)
           .setTitle('Person Protected')
-          .setDescription(`${user.username} is now protected. Users get 2 warnings, then 15 minute timeout.`)
+          .setDescription(`${user.username} is now protected. Users get 2 warnings, then 10 minute timeout.`)
           .setTimestamp();
         await interaction.reply({ embeds: [embed] });
       }
@@ -423,7 +422,7 @@ async function handleWarning(message, member, reason) {
     const remaining = WARN_THRESHOLD - warningCount;
     try {
       await message.author.send({
-        content: `⚠️ Warning ${warningCount}/${WARN_THRESHOLD} — You pinged the ${reason}. ${remaining} more warning${remaining === 1 ? '' : 's'} before 15 minute timeout.`,
+        content: `⚠️ Warning ${warningCount}/${WARN_THRESHOLD} — You pinged the ${reason}. ${remaining} more warning${remaining === 1 ? '' : 's'} before 10 minute timeout.`,
       }).catch(() => {});
 
       const ownerMessage = await message.reply({
@@ -436,7 +435,7 @@ async function handleWarning(message, member, reason) {
   } else {
     // Timeout on 3rd offense (after 2 warnings)
     try {
-      await member.timeout(SECOND_TIMEOUT_MS, `${reason} - 3rd offense`);
+      await member.timeout(TIMEOUT_MS, `${reason} - 3rd offense`);
 
       const timeoutId = String(++timeoutIdCounter);
       const row = new ActionRowBuilder().addComponents(
@@ -449,11 +448,11 @@ async function handleWarning(message, member, reason) {
       timeoutTargets.set(timeoutId, { userId: member.id, guildId: message.guildId });
 
       await message.author.send({
-        content: `You've been timed out for 15 minutes for the 3rd time pinging the ${reason}.`,
+        content: `You've been timed out for 10 minutes for the 3rd time pinging the ${reason}.`,
       }).catch(() => {});
 
       await message.reply({
-        content: `${message.author} timed out (15 mins) for pinging the ${reason}.`,
+        content: `${message.author} timed out (10 mins) for pinging the ${reason}.`,
         components: [row],
         ephemeral: true,
       });
@@ -464,7 +463,7 @@ async function handleWarning(message, member, reason) {
 
       setTimeout(() => {
         timeoutTargets.delete(timeoutId);
-      }, SECOND_TIMEOUT_MS);
+      }, TIMEOUT_MS);
     } catch (err) {
       console.error('Could not time out member:', err);
     }
