@@ -1,9 +1,13 @@
 require('dotenv').config();
+const fs = require('fs');
 const { Client, Events, GatewayIntentBits, PermissionsBitField, SlashCommandBuilder, REST, Routes, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType } = require('discord.js');
 
 const { BOT_TOKEN, OWNER_ID, OWNER_ROLE_ID, OWNER_SERVER_ID } = process.env;
 const PREFIX = process.env.PREFIX || '!';
-const TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const WARN_THRESHOLD = 2; // 2 warnings before timeout
+const FIRST_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const SECOND_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+const WARNING_RESET_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 if (!BOT_TOKEN || !OWNER_ID || !OWNER_ROLE_ID || !OWNER_SERVER_ID) {
   console.error('Missing BOT_TOKEN, OWNER_ID, OWNER_ROLE_ID, or OWNER_SERVER_ID — check your environment variables.');
@@ -19,20 +23,44 @@ const client = new Client({
   ],
 });
 
-// Store protected roles per guild: { guildId: Set of roleIds }
-const protectedRoles = new Map();
-
-// Store protected users per guild: { guildId: Set of userIds }
-const protectedUsers = new Map();
-
-// Store accept channels per guild: { guildId: Set of channelIds }
-const acceptChannels = new Map();
+// In-memory data storage
+const data = {
+  protectedRoles: {},
+  protectedUsers: {},
+  acceptChannels: {},
+  userWarnings: {},
+};
 
 // Store timeout targets for button interactions: { timeoutId: { userId, guildId } }
 const timeoutTargets = new Map();
 
 // Counter for generating unique timeout IDs
 let timeoutIdCounter = 0;
+
+// Backup/restore data
+function loadData() {
+  if (fs.existsSync('bot-data.json')) {
+    try {
+      const saved = JSON.parse(fs.readFileSync('bot-data.json', 'utf-8'));
+      Object.assign(data, saved);
+      console.log('Data loaded from bot-data.json');
+    } catch (err) {
+      console.error('Error loading data:', err);
+    }
+  }
+}
+
+function saveData() {
+  try {
+    fs.writeFileSync('bot-data.json', JSON.stringify(data, null, 2));
+    console.log('Data saved to bot-data.json');
+  } catch (err) {
+    console.error('Error saving data:', err);
+  }
+}
+
+// Load data on startup
+loadData();
 
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
@@ -41,7 +69,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   const commands = [
     new SlashCommandBuilder()
       .setName('setrole')
-      .setDescription('Protect a role from being pinged (5min timeout on ping)')
+      .setDescription('Protect a role from being pinged (2 warnings, then 15min timeout)')
       .addRoleOption((option) =>
         option
           .setName('role')
@@ -51,7 +79,7 @@ client.once(Events.ClientReady, async (readyClient) => {
       .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild),
     new SlashCommandBuilder()
       .setName('selectperson')
-      .setDescription('Protect a person from being pinged (5min timeout on ping)')
+      .setDescription('Protect a person from being pinged (2 warnings, then 15min timeout)')
       .addUserOption((option) =>
         option
           .setName('user')
@@ -86,7 +114,6 @@ client.once(Events.ClientReady, async (readyClient) => {
 });
 
 client.on(Events.GuildCreate, async (guild) => {
-  // If bot joins a server that's not the owner's server, leave immediately
   if (guild.id !== OWNER_SERVER_ID) {
     console.log(`Leaving unauthorized server: ${guild.name} (${guild.id})`);
     await guild.leave();
@@ -96,20 +123,20 @@ client.on(Events.GuildCreate, async (guild) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
-  // Handle slash commands
   if (interaction.isChatInputCommand()) {
     if (interaction.commandName === 'setrole') {
       const role = interaction.options.getRole('role');
       const guildId = interaction.guildId;
 
-      if (!protectedRoles.has(guildId)) {
-        protectedRoles.set(guildId, new Set());
+      if (!data.protectedRoles[guildId]) {
+        data.protectedRoles[guildId] = [];
       }
 
-      const roles = protectedRoles.get(guildId);
+      const roles = data.protectedRoles[guildId];
+      const idx = roles.indexOf(role.id);
 
-      if (roles.has(role.id)) {
-        roles.delete(role.id);
+      if (idx > -1) {
+        roles.splice(idx, 1);
         const embed = new EmbedBuilder()
           .setColor(0xff6b6b)
           .setTitle('Role Unprotected')
@@ -117,28 +144,29 @@ client.on(Events.InteractionCreate, async (interaction) => {
           .setTimestamp();
         await interaction.reply({ embeds: [embed] });
       } else {
-        roles.add(role.id);
+        roles.push(role.id);
         const embed = new EmbedBuilder()
           .setColor(0x51cf66)
           .setTitle('Role Protected')
-          .setDescription(
-            `${role.name} is now protected. Anyone mentioning this role or users with this role will be timed out for 5 minutes.`
-          )
+          .setDescription(`${role.name} is now protected. Users get 2 warnings, then 15 minute timeout.`)
           .setTimestamp();
         await interaction.reply({ embeds: [embed] });
       }
+
+      saveData();
     } else if (interaction.commandName === 'selectperson') {
       const user = interaction.options.getUser('user');
       const guildId = interaction.guildId;
 
-      if (!protectedUsers.has(guildId)) {
-        protectedUsers.set(guildId, new Set());
+      if (!data.protectedUsers[guildId]) {
+        data.protectedUsers[guildId] = [];
       }
 
-      const users = protectedUsers.get(guildId);
+      const users = data.protectedUsers[guildId];
+      const idx = users.indexOf(user.id);
 
-      if (users.has(user.id)) {
-        users.delete(user.id);
+      if (idx > -1) {
+        users.splice(idx, 1);
         const embed = new EmbedBuilder()
           .setColor(0xff6b6b)
           .setTitle('Person Unprotected')
@@ -146,18 +174,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
           .setTimestamp();
         await interaction.reply({ embeds: [embed] });
       } else {
-        users.add(user.id);
+        users.push(user.id);
         const embed = new EmbedBuilder()
           .setColor(0x51cf66)
           .setTitle('Person Protected')
-          .setDescription(
-            `${user.username} is now protected. Anyone mentioning this person will be timed out for 5 minutes.`
-          )
+          .setDescription(`${user.username} is now protected. Users get 2 warnings, then 15 minute timeout.`)
           .setTimestamp();
         await interaction.reply({ embeds: [embed] });
       }
+
+      saveData();
     } else if (interaction.commandName === 'acceptchannel') {
-      // Owner only check
       if (interaction.user.id !== OWNER_ID) {
         return interaction.reply({ content: "Only the server owner can use this command.", ephemeral: true });
       }
@@ -165,36 +192,37 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const channel = interaction.options.getChannel('channel');
       const guildId = interaction.guildId;
 
-      if (!acceptChannels.has(guildId)) {
-        acceptChannels.set(guildId, new Set());
+      if (!data.acceptChannels[guildId]) {
+        data.acceptChannels[guildId] = [];
       }
 
-      const channels = acceptChannels.get(guildId);
+      const channels = data.acceptChannels[guildId];
+      const idx = channels.indexOf(channel.id);
 
-      if (channels.has(channel.id)) {
-        channels.delete(channel.id);
+      if (idx > -1) {
+        channels.splice(idx, 1);
         const embed = new EmbedBuilder()
           .setColor(0xff6b6b)
           .setTitle('Channel Disabled')
-          .setDescription(`${channel.name} is no longer an accept channel. Pings here will timeout.`)
+          .setDescription(`${channel.name} is no longer an accept channel.`)
           .setTimestamp();
         await interaction.reply({ embeds: [embed] });
       } else {
-        channels.add(channel.id);
+        channels.push(channel.id);
         const embed = new EmbedBuilder()
           .setColor(0x51cf66)
           .setTitle('Channel Accepted')
-          .setDescription(`${channel.name} is now an accept channel. People can ping the owner here without timeout.`)
+          .setDescription(`${channel.name} is now an accept channel. People can ping the owner here without warnings.`)
           .setTimestamp();
         await interaction.reply({ embeds: [embed] });
       }
+
+      saveData();
     }
   }
 
-  // Handle button clicks
   if (interaction.isButton()) {
     if (interaction.customId.startsWith('remove_timeout_')) {
-      // Only owner can use the button
       if (interaction.user.id !== OWNER_ID) {
         return interaction.reply({ content: "Only the server owner can remove timeouts.", ephemeral: true });
       }
@@ -213,7 +241,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await member.timeout(null, `Timeout removed by ${interaction.user.tag}`);
         await interaction.reply({ content: `Removed the timeout on **${member.user.tag}**.`, ephemeral: true });
 
-        // Remove the button after timeout is removed
         timeoutTargets.delete(timeoutId);
         const newRow = new ActionRowBuilder().addComponents(
           new ButtonBuilder()
@@ -242,65 +269,56 @@ client.on(Events.MessageCreate, async (message) => {
     if (!member) return;
 
     const guildId = message.guildId;
+    const userId = message.author.id;
     const channelId = message.channelId;
 
-    // Check if this message is in an accept channel
-    const isInAcceptChannel = acceptChannels.has(guildId) && acceptChannels.get(guildId).has(channelId);
-
-    // If in accept channel and pinging owner, don't timeout
+    // Check if in accept channel
+    const isInAcceptChannel = data.acceptChannels[guildId]?.includes(channelId);
     if (isInAcceptChannel && message.mentions.roles.has(OWNER_ROLE_ID)) {
       return;
     }
 
     // --- Check protected roles ---
-    let shouldTimeout = false;
-
-    if (protectedRoles.has(guildId)) {
-      const protectedSet = protectedRoles.get(guildId);
-
-      // Check if message mentions a protected role
-      for (const [roleId] of message.mentions.roles) {
-        if (protectedSet.has(roleId)) {
-          shouldTimeout = true;
+    let shouldWarn = false;
+    if (data.protectedRoles[guildId]) {
+      for (const roleId of message.mentions.roles.keys()) {
+        if (data.protectedRoles[guildId].includes(roleId)) {
+          shouldWarn = true;
           break;
         }
       }
 
-      // Check if message author has a protected role
-      if (!shouldTimeout) {
-        for (const [roleId] of member.roles.cache) {
-          if (protectedSet.has(roleId)) {
-            shouldTimeout = true;
+      if (!shouldWarn) {
+        for (const roleId of member.roles.cache.keys()) {
+          if (data.protectedRoles[guildId].includes(roleId)) {
+            shouldWarn = true;
             break;
           }
         }
       }
 
-      if (shouldTimeout) {
-        await punishPing(message, member, 'protected role');
+      if (shouldWarn) {
+        await handleWarning(message, member, 'protected role');
       }
     }
 
     // --- Check protected users ---
-    if (protectedUsers.has(guildId)) {
-      const protectedSet = protectedUsers.get(guildId);
-
-      // Check if message mentions a protected user
-      for (const [userId] of message.mentions.users) {
-        if (protectedSet.has(userId)) {
-          shouldTimeout = true;
+    if (data.protectedUsers[guildId]) {
+      for (const mentionUserId of message.mentions.users.keys()) {
+        if (data.protectedUsers[guildId].includes(mentionUserId)) {
+          shouldWarn = true;
           break;
         }
       }
 
-      if (shouldTimeout) {
-        await punishPing(message, member, 'protected person');
+      if (shouldWarn) {
+        await handleWarning(message, member, 'protected person');
       }
     }
 
-    // --- Core feature: pinging the owner role = 5 minute timeout (unless in accept channel) ---
+    // --- Core feature: pinging owner role ---
     if (message.mentions.roles.has(OWNER_ROLE_ID) && !isInAcceptChannel) {
-      await punishPing(message, member, 'owner role');
+      await handleWarning(message, member, 'owner role');
     }
 
     // --- Commands ---
@@ -318,9 +336,9 @@ client.on(Events.MessageCreate, async (message) => {
           `\`${PREFIX}ping\` — check if the bot's alive`,
           `\`${PREFIX}help\` — show this list`,
           `\`${PREFIX}untimeout @user\` — remove a timeout (owner only)`,
-          `\`/setrole <role>\` — protect/unprotect a role from pings (manage guild only)`,
-          `\`/selectperson <user>\` — protect/unprotect a person from pings (manage guild only)`,
-          `\`/acceptchannel <channel>\` — allow pinging owner in this channel (owner only)`,
+          `\`/setrole <role>\` — protect a role`,
+          `\`/selectperson <user>\` — protect a person`,
+          `\`/acceptchannel <channel>\` — allow owner pings in a channel`,
         ].join('\n'),
       );
     } else if (command === 'untimeout') {
@@ -331,53 +349,90 @@ client.on(Events.MessageCreate, async (message) => {
   }
 });
 
-// Times out whoever pinged protected role/person/owner — unless they're the real owner or an admin
-// (Discord's API blocks timing out admins anyway, so we check first instead of erroring).
-async function punishPing(message, member, reason) {
+async function handleWarning(message, member, reason) {
   if (message.author.id === OWNER_ID) return;
   if (member.permissions.has(PermissionsBitField.Flags.Administrator)) return;
 
-  try {
-    await member.timeout(TIMEOUT_MS, `Pinged the ${reason}`);
+  const guildId = message.guildId;
+  const userId = message.author.id;
+  const warningKey = `${guildId}:${userId}:${reason}`;
 
-    // Generate unique timeout ID instead of using message ID
-    const timeoutId = String(++timeoutIdCounter);
-
-    // Create the button with the unique timeout ID
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`remove_timeout_${timeoutId}`)
-        .setLabel('Remove')
-        .setStyle(ButtonStyle.Success)
-    );
-
-    // Store the timeout target for button interaction
-    timeoutTargets.set(timeoutId, { userId: member.id, guildId: message.guildId });
-
-    // Send DM to timed out user (no button)
-    await message.author.send({
-      content: `You've been timed out for 5 minutes for pinging the ${reason}.`,
-    }).catch(() => {
-      // If DM fails, silently ignore (owner message will show in chat)
-    });
-
-    // Send ephemeral (only owner sees) message in chat with Remove button
-    const ownerMessage = await message.reply({
-      content: `${message.author} timed out for pinging the ${reason}.`,
-      components: [row],
-      ephemeral: true,
-    });
-
-    // Clean up stored data after 5 minutes (timeout expires)
-    setTimeout(() => {
-      timeoutTargets.delete(timeoutId);
-    }, TIMEOUT_MS);
-  } catch (err) {
-    console.error('Could not time out member:', err);
+  // Initialize user warnings if needed
+  if (!data.userWarnings[warningKey]) {
+    data.userWarnings[warningKey] = {
+      count: 0,
+      lastWarningTime: 0,
+    };
   }
+
+  const now = Date.now();
+  const lastTime = data.userWarnings[warningKey].lastWarningTime;
+
+  // Reset warnings if 24 hours have passed
+  if (lastTime && (now - lastTime) > WARNING_RESET_MS) {
+    data.userWarnings[warningKey].count = 0;
+  }
+
+  data.userWarnings[warningKey].count++;
+  data.userWarnings[warningKey].lastWarningTime = now;
+
+  const warningCount = data.userWarnings[warningKey].count;
+
+  if (warningCount < WARN_THRESHOLD) {
+    // Send warning
+    const remaining = WARN_THRESHOLD - warningCount;
+    try {
+      await message.author.send({
+        content: `⚠️ Warning ${warningCount}/${WARN_THRESHOLD} — You pinged the ${reason}. ${remaining} more warning${remaining === 1 ? '' : 's'} before 15 minute timeout.`,
+      }).catch(() => {});
+
+      const ownerMessage = await message.reply({
+        content: `⚠️ ${message.author} warned (${warningCount}/${WARN_THRESHOLD}) for pinging the ${reason}.`,
+        ephemeral: true,
+      });
+    } catch (err) {
+      console.error('Could not send warning:', err);
+    }
+  } else {
+    // Timeout on 3rd offense (after 2 warnings)
+    try {
+      await member.timeout(SECOND_TIMEOUT_MS, `${reason} - 3rd offense`);
+
+      const timeoutId = String(++timeoutIdCounter);
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`remove_timeout_${timeoutId}`)
+          .setLabel('Remove')
+          .setStyle(ButtonStyle.Success)
+      );
+
+      timeoutTargets.set(timeoutId, { userId: member.id, guildId: message.guildId });
+
+      await message.author.send({
+        content: `You've been timed out for 15 minutes for the 3rd time pinging the ${reason}.`,
+      }).catch(() => {});
+
+      await message.reply({
+        content: `${message.author} timed out (15 mins) for pinging the ${reason}.`,
+        components: [row],
+        ephemeral: true,
+      });
+
+      // Reset warnings after timeout
+      data.userWarnings[warningKey].count = 0;
+      data.userWarnings[warningKey].lastWarningTime = 0;
+
+      setTimeout(() => {
+        timeoutTargets.delete(timeoutId);
+      }, SECOND_TIMEOUT_MS);
+    } catch (err) {
+      console.error('Could not time out member:', err);
+    }
+  }
+
+  saveData();
 }
 
-// Owner-only: lifts a timeout early. Accepts a mention or a raw user ID.
 async function handleUntimeout(message, args) {
   if (message.author.id !== OWNER_ID) {
     return message.reply("You don't have permission to use that command.");
@@ -402,6 +457,11 @@ async function handleUntimeout(message, args) {
     );
   }
 }
+
+// Auto-save data every 5 minutes
+setInterval(() => {
+  saveData();
+}, 5 * 60 * 1000);
 
 client.login(BOT_TOKEN);
 
