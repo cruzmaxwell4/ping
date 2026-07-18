@@ -371,7 +371,7 @@ client.on(Events.MessageCreate, async (message) => {
     } else if (command === 'help') {
       await message.reply(
         [
-          `**Commands** (prefix: \`${PREFIX}\\`)`,
+          `**Commands** (prefix: \`${PREFIX}\`)`,
           `\`${PREFIX}ping\` — check if the bot's alive`,
           `\`${PREFIX}help\` — show this list`,
           `\`${PREFIX}untimeout @user\` — remove a timeout (owner only)`,
