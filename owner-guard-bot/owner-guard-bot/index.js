@@ -98,6 +98,16 @@ client.once(Events.ClientReady, async (readyClient) => {
           .addChannelTypes(ChannelType.GuildText)
       )
       .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+    new SlashCommandBuilder()
+      .setName('refreshwarnings')
+      .setDescription('Clear warnings for a user so they can start fresh at 1 warning (owner only)')
+      .addUserOption((option) =>
+        option
+          .setName('user')
+          .setDescription('The user to clear warnings for')
+          .setRequired(true)
+      )
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   ];
 
   const rest = new REST().setToken(BOT_TOKEN);
@@ -218,6 +228,35 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
 
       saveData();
+    } else if (interaction.commandName === 'refreshwarnings') {
+      if (interaction.user.id !== OWNER_ID) {
+        return interaction.reply({ content: "Only the server owner can use this command.", ephemeral: true });
+      }
+
+      const user = interaction.options.getUser('user');
+      const guildId = interaction.guildId;
+
+      // Find and clear all warnings for this user in this guild
+      let clearedCount = 0;
+      for (const key in data.userWarnings) {
+        if (key.startsWith(`${guildId}:${user.id}:`)) {
+          delete data.userWarnings[key];
+          clearedCount++;
+        }
+      }
+
+      saveData();
+
+      const embed = new EmbedBuilder()
+        .setColor(0x51cf66)
+        .setTitle('Warnings Refreshed')
+        .setDescription(`${user.username}'s warnings have been cleared. They can now ping again starting at 1 warning.`)
+        .addFields(
+          { name: 'User', value: user.tag, inline: true },
+          { name: 'Warnings Cleared', value: String(clearedCount), inline: true }
+        )
+        .setTimestamp();
+      await interaction.reply({ embeds: [embed] });
     }
   }
 
@@ -332,13 +371,14 @@ client.on(Events.MessageCreate, async (message) => {
     } else if (command === 'help') {
       await message.reply(
         [
-          `**Commands** (prefix: \`${PREFIX}\`)`,
+          `**Commands** (prefix: \`${PREFIX}\\`)`,
           `\`${PREFIX}ping\` — check if the bot's alive`,
           `\`${PREFIX}help\` — show this list`,
           `\`${PREFIX}untimeout @user\` — remove a timeout (owner only)`,
           `\`/setrole <role>\` — protect a role`,
           `\`/selectperson <user>\` — protect a person`,
           `\`/acceptchannel <channel>\` — allow owner pings in a channel`,
+          `\`/refreshwarnings <user>\` — clear a user's warnings (owner only)`,
         ].join('\n'),
       );
     } else if (command === 'untimeout') {
