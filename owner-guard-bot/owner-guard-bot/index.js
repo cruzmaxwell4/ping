@@ -28,6 +28,7 @@ const data = {
   protectedUsers: {},
   acceptChannels: {},
   userWarnings: {},
+  exemptUsers: {},
 };
 
 // Store timeout targets for button interactions: { timeoutId: { userId, guildId } }
@@ -104,6 +105,16 @@ client.once(Events.ClientReady, async (readyClient) => {
         option
           .setName('user')
           .setDescription('The user to clear warnings for')
+          .setRequired(true)
+      )
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+    new SlashCommandBuilder()
+      .setName('setperson')
+      .setDescription('Exempt a user from all warnings and timeouts (owner only)')
+      .addUserOption((option) =>
+        option
+          .setName('user')
+          .setDescription('The user to exempt')
           .setRequired(true)
       )
       .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
@@ -256,6 +267,40 @@ client.on(Events.InteractionCreate, async (interaction) => {
         )
         .setTimestamp();
       await interaction.reply({ embeds: [embed] });
+    } else if (interaction.commandName === 'setperson') {
+      if (interaction.user.id !== OWNER_ID) {
+        return interaction.reply({ content: "Only the server owner can use this command.", ephemeral: true });
+      }
+
+      const user = interaction.options.getUser('user');
+      const guildId = interaction.guildId;
+
+      if (!data.exemptUsers[guildId]) {
+        data.exemptUsers[guildId] = [];
+      }
+
+      const users = data.exemptUsers[guildId];
+      const idx = users.indexOf(user.id);
+
+      if (idx > -1) {
+        users.splice(idx, 1);
+        const embed = new EmbedBuilder()
+          .setColor(0xff6b6b)
+          .setTitle('Exemption Removed')
+          .setDescription(`${user.username} is no longer exempt from warnings.`)
+          .setTimestamp();
+        await interaction.reply({ embeds: [embed] });
+      } else {
+        users.push(user.id);
+        const embed = new EmbedBuilder()
+          .setColor(0x3498db)
+          .setTitle('Person Exempted')
+          .setDescription(`${user.username} is now exempt from all warnings and timeouts.`)
+          .setTimestamp();
+        await interaction.reply({ embeds: [embed] });
+      }
+
+      saveData();
     }
   }
 
@@ -378,6 +423,7 @@ client.on(Events.MessageCreate, async (message) => {
           `\`/selectperson <user>\` — protect a person`,
           `\`/acceptchannel <channel>\` — allow owner pings in a channel`,
           `\`/refreshwarnings <user>\` — clear a user's warnings (owner only)`,
+          `\`/setperson <user>\` — exempt a user from all warnings (owner only)`,
         ].join('\n'),
       );
     } else if (command === 'untimeout') {
@@ -394,6 +440,8 @@ async function handleWarning(message, member, reason) {
 
   const guildId = message.guildId;
   const userId = message.author.id;
+
+  if (data.exemptUsers[guildId]?.includes(userId)) return;
   const warningKey = `${guildId}:${userId}:${reason}`;
 
   // Initialize user warnings if needed
