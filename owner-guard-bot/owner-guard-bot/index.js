@@ -2,7 +2,7 @@ require('dotenv').config();
 const fs = require('fs');
 const { Client, Events, GatewayIntentBits, PermissionsBitField, SlashCommandBuilder, REST, Routes, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType } = require('discord.js');
 
-const { BOT_TOKEN, OWNER_ID, OWNER_ROLE_ID, OWNER_SERVER_ID } = process.env;
+const { BOT_TOKEN, OWNER_ID, OWNER_ROLE_ID, OWNER_SERVER_ID, INVITE_LINK } = process.env;
 const PREFIX = process.env.PREFIX || '!';
 const WARN_THRESHOLD = 2; // 2 warnings before timeout
 const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
@@ -65,11 +65,40 @@ function saveData() {
   }
 }
 
+// Extract invite code from URL
+function extractInviteCode(url) {
+  const match = url.match(/(?:discord\.gg|discord\.io|discord\.me|discord\.li|discordapp\.com\/invite)\/([a-zA-Z0-9-_]+)/i);
+  return match ? match[1] : null;
+}
+
+// Check if message contains whitelisted invite link
+function containsWhitelistedInvite(content) {
+  if (!INVITE_LINK) return false;
+
+  const whitelistedCode = extractInviteCode(INVITE_LINK);
+  if (!whitelistedCode) return false;
+
+  const matches = content.match(INVITE_REGEX);
+  if (!matches) return false;
+
+  for (const match of matches) {
+    const code = extractInviteCode(match);
+    if (code === whitelistedCode) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 // Load data on startup
 loadData();
 
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
+  if (INVITE_LINK) {
+    console.log(`✓ Whitelisted invite link: ${INVITE_LINK}`);
+  }
 
   // Register slash commands
   const commands = [
@@ -504,8 +533,11 @@ client.on(Events.MessageCreate, async (message) => {
 
     // --- Check for invite links ---
     if (INVITE_REGEX.test(message.content)) {
-      await handleInviteLink(message, member);
-      return;
+      // Check if it's the whitelisted invite link
+      if (!containsWhitelistedInvite(message.content)) {
+        await handleInviteLink(message, member);
+        return;
+      }
     }
 
     // Check if in accept channel
