@@ -6,7 +6,11 @@ const { BOT_TOKEN, OWNER_ID, OWNER_ROLE_ID, OWNER_SERVER_ID } = process.env;
 const PREFIX = process.env.PREFIX || '!';
 const WARN_THRESHOLD = 2; // 2 warnings before timeout
 const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const INVITE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes for invite links
 const WARNING_RESET_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+// Regex to detect Discord invite links
+const INVITE_REGEX = /(https?:\/\/)?(www\.)?(discord\.(gg|io|me|li)|discordapp\.com\/invite)\/[a-zA-Z0-9-_]+/gi;
 
 if (!BOT_TOKEN || !OWNER_ID || !OWNER_ROLE_ID || !OWNER_SERVER_ID) {
   console.error('Missing BOT_TOKEN, OWNER_ID, OWNER_ROLE_ID, or OWNER_SERVER_ID — check your environment variables.');
@@ -489,6 +493,21 @@ client.on(Events.MessageCreate, async (message) => {
     const userId = message.author.id;
     const channelId = message.channelId;
 
+    // Owner can do anything
+    if (message.author.id === OWNER_ID) return;
+
+    // Admin bypass
+    if (member.permissions.has(PermissionsBitField.Flags.Administrator)) return;
+
+    // Exempt users bypass
+    if (data.exemptUsers[guildId]?.includes(userId)) return;
+
+    // --- Check for invite links ---
+    if (INVITE_REGEX.test(message.content)) {
+      await handleInviteLink(message, member);
+      return;
+    }
+
     // Check if in accept channel
     const isInAcceptChannel = data.acceptChannels[guildId]?.includes(channelId);
     if (isInAcceptChannel && message.mentions.roles.has(OWNER_ROLE_ID)) {
@@ -582,6 +601,41 @@ client.on(Events.MessageCreate, async (message) => {
   }
 });
 
+async function handleInviteLink(message, member) {
+  try {
+    // Delete the message
+    await message.delete().catch(() => {});
+
+    // Timeout for 5 minutes
+    await member.timeout(INVITE_TIMEOUT_MS, 'Sent invite link');
+
+    const timeoutId = String(++timeoutIdCounter);
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`remove_timeout_${timeoutId}`)
+        .setLabel('Remove')
+        .setStyle(ButtonStyle.Success)
+    );
+
+    timeoutTargets.set(timeoutId, { userId: member.id, guildId: message.guildId });
+
+    await message.author.send({
+      content: `⛔ You've been timed out for 5 minutes for posting an invite link.`,
+    }).catch(() => {});
+
+    const logMessage = await message.channel.send({
+      content: `⛔ ${message.author} timed out (5 mins) for posting an invite link.`,
+      components: [row],
+    });
+
+    setTimeout(() => {
+      timeoutTargets.delete(timeoutId);
+    }, INVITE_TIMEOUT_MS);
+  } catch (err) {
+    console.error('Could not handle invite link:', err);
+  }
+}
+
 async function handleWarning(message, member, reason) {
   if (message.author.id === OWNER_ID) return;
   if (member.permissions.has(PermissionsBitField.Flags.Administrator)) return;
@@ -624,7 +678,7 @@ async function handleWarning(message, member, reason) {
         content: `⚠️ Warning ${warningCount}/${WARN_THRESHOLD} — You pinged the ${reason}. ${remaining} more warning${remaining === 1 ? '' : 's'} before 10 minute timeout.`,
       }).catch(() => {});
 
-      const ownerMessage = await message.reply({
+      await message.reply({
         content: `⚠️ ${message.author} warned (${warningCount}/${WARN_THRESHOLD}) for pinging the ${reason}.`,
         ephemeral: true,
       });
