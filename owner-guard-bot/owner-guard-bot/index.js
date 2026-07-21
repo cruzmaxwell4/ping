@@ -68,7 +68,12 @@ function saveData() {
 // Extract invite code from URL
 function extractInviteCode(url) {
   const match = url.match(/(?:discord\.gg|discord\.io|discord\.me|discord\.li|discordapp\.com\/invite)\/([a-zA-Z0-9-_]+)/i);
-  return match ? match[1] : null;
+  return match ? match[1].toLowerCase() : null;
+}
+
+// Check if message contains invite link
+function containsInviteLink(content) {
+  return /(?:https?:\/\/)?(www\.)?(discord\.(gg|io|me|li)|discordapp\.com\/invite)\/[a-zA-Z0-9-_]+/i.test(content);
 }
 
 // Check if message contains whitelisted invite link
@@ -76,12 +81,16 @@ function containsWhitelistedInvite(content) {
   if (!INVITE_LINK) return false;
 
   const whitelistedCode = extractInviteCode(INVITE_LINK);
-  if (!whitelistedCode) return false;
+  if (!whitelistedCode) {
+    console.warn('INVITE_LINK env var is set but could not be parsed:', INVITE_LINK);
+    return false;
+  }
 
-  const matches = content.match(INVITE_REGEX);
-  if (!matches) return false;
+  // Find all invite links in the message
+  const inviteMatches = content.match(/(?:https?:\/\/)?(www\.)?(discord\.(gg|io|me|li)|discordapp\.com\/invite)\/[a-zA-Z0-9-_]+/gi);
+  if (!inviteMatches) return false;
 
-  for (const match of matches) {
+  for (const match of inviteMatches) {
     const code = extractInviteCode(match);
     if (code === whitelistedCode) {
       return true;
@@ -97,7 +106,8 @@ loadData();
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
   if (INVITE_LINK) {
-    console.log(`✓ Whitelisted invite link: ${INVITE_LINK}`);
+    const code = extractInviteCode(INVITE_LINK);
+    console.log(`✓ Whitelisted invite code: ${code}`);
   }
 
   // Register slash commands
@@ -532,9 +542,14 @@ client.on(Events.MessageCreate, async (message) => {
     if (data.exemptUsers[guildId]?.includes(userId)) return;
 
     // --- Check for invite links ---
-    if (INVITE_REGEX.test(message.content)) {
+    if (containsInviteLink(message.content)) {
       // Check if it's the whitelisted invite link
-      if (!containsWhitelistedInvite(message.content)) {
+      if (containsWhitelistedInvite(message.content)) {
+        // Whitelisted, allow it to pass through
+        console.log(`✓ User ${message.author.tag} posted whitelisted invite link`);
+        return;
+      } else {
+        // Not whitelisted, timeout
         await handleInviteLink(message, member);
         return;
       }
