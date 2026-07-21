@@ -2,15 +2,12 @@ require('dotenv').config();
 const fs = require('fs');
 const { Client, Events, GatewayIntentBits, PermissionsBitField, SlashCommandBuilder, REST, Routes, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType } = require('discord.js');
 
-const { BOT_TOKEN, OWNER_ID, OWNER_ROLE_ID, OWNER_SERVER_ID } = process.env;
+const { BOT_TOKEN, OWNER_ID, OWNER_ROLE_ID, OWNER_SERVER_ID, INVITE_LINK: ENV_INVITE_LINK } = process.env;
 const PREFIX = process.env.PREFIX || '!';
 const WARN_THRESHOLD = 2; // 2 warnings before timeout
 const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const INVITE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes for invite links
 const WARNING_RESET_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-// Regex to detect Discord invite links
-const INVITE_REGEX = /(https?:\/\/)?(www\.)?(discord\.(gg|io|me|li)|discordapp\.com\/invite)\/[a-zA-Z0-9-_]+/gi;
 
 if (!BOT_TOKEN || !OWNER_ID || !OWNER_ROLE_ID || !OWNER_SERVER_ID) {
   console.error('Missing BOT_TOKEN, OWNER_ID, OWNER_ROLE_ID, or OWNER_SERVER_ID — check your environment variables.');
@@ -35,6 +32,7 @@ const data = {
   exemptUsers: {},
   allowedUsers: {},
   allowedRoles: {},
+  allowedInviteLinks: {},
 };
 
 // Store timeout targets for button interactions: { timeoutId: { userId, guildId } }
@@ -65,11 +63,61 @@ function saveData() {
   }
 }
 
+// Extract invite code from URL
+function extractInviteCode(url) {
+  const match = url.match(/(?:discord\.gg|discord\.io|discord\.me|discord\.li|discordapp\.com\/invite)\/([a-zA-Z0-9-_]+)/i);
+  return match ? match[1].toLowerCase() : null;
+}
+
+// Check if message contains invite link
+function containsInviteLink(content) {
+  return /(?:https?:\/\/)?(www\.)?(discord\.(gg|io|me|li)|discordapp\.com\/invite)\/[a-zA-Z0-9-_]+/i.test(content);
+}
+
+// Check if message contains whitelisted invite link
+function containsWhitelistedInvite(content, guildId) {
+  // Check env var first
+  if (ENV_INVITE_LINK) {
+    const envCode = extractInviteCode(ENV_INVITE_LINK);
+    if (envCode) {
+      const inviteMatches = content.match(/(?:https?:\/\/)?(www\.)?(discord\.(gg|io|me|li)|discordapp\.com\/invite)\/[a-zA-Z0-9-_]+/gi);
+      if (inviteMatches) {
+        for (const match of inviteMatches) {
+          const code = extractInviteCode(match);
+          if (code === envCode) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+
+  // Check guild-specific whitelisted links
+  const guildLinks = data.allowedInviteLinks[guildId];
+  if (!guildLinks || guildLinks.length === 0) return false;
+
+  const inviteMatches = content.match(/(?:https?:\/\/)?(www\.)?(discord\.(gg|io|me|li)|discordapp\.com\/invite)\/[a-zA-Z0-9-_]+/gi);
+  if (!inviteMatches) return false;
+
+  for (const match of inviteMatches) {
+    const code = extractInviteCode(match);
+    if (code && guildLinks.includes(code)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 // Load data on startup
 loadData();
 
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
+  if (ENV_INVITE_LINK) {
+    const code = extractInviteCode(ENV_INVITE_LINK);
+    console.log(`✓ Whitelisted invite code (env): ${code}`);
+  }
 
   // Register slash commands
   const commands = [
@@ -151,6 +199,16 @@ client.once(Events.ClientReady, async (readyClient) => {
         option
           .setName('user')
           .setDescription('The person to allow')
+          .setRequired(true)
+      )
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+    new SlashCommandBuilder()
+      .setName('setinvitelinkallow')
+      .setDescription('Whitelist an invite link so it can be shared without timeout (owner only)')
+      .addStringOption((option) =>
+        option
+          .setName('link')
+          .setDescription('The Discord invite link to allow')
           .setRequired(true)
       )
       .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
@@ -439,6 +497,48 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
 
       saveData();
+    } else if (interaction.commandName === 'setinvitelinkallow') {
+      if (interaction.user.id !== OWNER_ID) {
+        return interaction.reply({ content: "Only the server owner can use this command.", ephemeral: true });
+      }
+
+      const link = interaction.options.getString('link');
+      const guildId = interaction.guildId;
+      const code = extractInviteCode(link);
+
+      if (!code) {
+        return interaction.reply({ 
+          content: "❌ Invalid Discord invite link. Please provide a valid link like `discord.gg/abc123`", 
+          ephemeral: true 
+        });
+      }
+
+      if (!data.allowedInviteLinks[guildId]) {
+        data.allowedInviteLinks[guildId] = [];
+      }
+
+      const links = data.allowedInviteLinks[guildId];
+      const idx = links.indexOf(code);
+
+      if (idx > -1) {
+        links.splice(idx, 1);
+        const embed = new EmbedBuilder()
+          .setColor(0xff6b6b)
+          .setTitle('Invite Link Removed')
+          .setDescription(`\`${code}\` is no longer whitelisted.`)
+          .setTimestamp();
+        await interaction.reply({ embeds: [embed] });
+      } else {
+        links.push(code);
+        const embed = new EmbedBuilder()
+          .setColor(0x51cf66)
+          .setTitle('Invite Link Whitelisted')
+          .setDescription(`\`${code}\` can now be shared without timeout.`)
+          .setTimestamp();
+        await interaction.reply({ embeds: [embed] });
+      }
+
+      saveData();
     }
   }
 
@@ -503,9 +603,17 @@ client.on(Events.MessageCreate, async (message) => {
     if (data.exemptUsers[guildId]?.includes(userId)) return;
 
     // --- Check for invite links ---
-    if (INVITE_REGEX.test(message.content)) {
-      await handleInviteLink(message, member);
-      return;
+    if (containsInviteLink(message.content)) {
+      // Check if it's whitelisted (env var or guild-specific)
+      if (containsWhitelistedInvite(message.content, guildId)) {
+        // Whitelisted, allow it to pass through
+        console.log(`✓ User ${message.author.tag} posted whitelisted invite link`);
+        return;
+      } else {
+        // Not whitelisted, timeout
+        await handleInviteLink(message, member);
+        return;
+      }
     }
 
     // Check if in accept channel
@@ -591,6 +699,7 @@ client.on(Events.MessageCreate, async (message) => {
           `\`/personallowed <user>\` — allow user to ping owner/roles freely`,
           `\`/allowrole <role>\` — allow a role to ping freely (owner only)`,
           `\`/allowperson <user>\` — allow a person to ping freely (owner only)`,
+          `\`/setinvitelinkallow <link>\` — whitelist an invite link (owner only)`,
         ].join('\n'),
       );
     } else if (command === 'untimeout') {
