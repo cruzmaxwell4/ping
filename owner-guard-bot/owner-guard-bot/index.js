@@ -69,40 +69,36 @@ function extractInviteCode(url) {
   return match ? match[1].toLowerCase() : null;
 }
 
-// Check if message contains invite link
-function containsInviteLink(content) {
-  return /(?:https?:\/\/)?(www\.)?(discord\.(gg|io|me|li)|discordapp\.com\/invite)\/[a-zA-Z0-9-_]+/i.test(content);
+// Check if message contains invite link and return all codes
+function getInviteCodes(content) {
+  const inviteMatches = content.match(/(?:https?:\/\/)?(www\.)?(discord\.(gg|io|me|li)|discordapp\.com\/invite)\/[a-zA-Z0-9-_]+/gi);
+  if (!inviteMatches) return [];
+  
+  const codes = [];
+  for (const match of inviteMatches) {
+    const code = extractInviteCode(match);
+    if (code) codes.push(code);
+  }
+  return codes;
 }
 
-// Check if message contains whitelisted invite link
-function containsWhitelistedInvite(content, guildId) {
+// Check if any code in the message is whitelisted
+function hasWhitelistedInvite(inviteCodes, guildId) {
   // Check env var first
   if (ENV_INVITE_LINK) {
     const envCode = extractInviteCode(ENV_INVITE_LINK);
-    if (envCode) {
-      const inviteMatches = content.match(/(?:https?:\/\/)?(www\.)?(discord\.(gg|io|me|li)|discordapp\.com\/invite)\/[a-zA-Z0-9-_]+/gi);
-      if (inviteMatches) {
-        for (const match of inviteMatches) {
-          const code = extractInviteCode(match);
-          if (code === envCode) {
-            return true;
-          }
-        }
-      }
+    if (envCode && inviteCodes.includes(envCode)) {
+      return true;
     }
   }
 
   // Check guild-specific whitelisted links
   const guildLinks = data.allowedInviteLinks[guildId];
-  if (!guildLinks || guildLinks.length === 0) return false;
-
-  const inviteMatches = content.match(/(?:https?:\/\/)?(www\.)?(discord\.(gg|io|me|li)|discordapp\.com\/invite)\/[a-zA-Z0-9-_]+/gi);
-  if (!inviteMatches) return false;
-
-  for (const match of inviteMatches) {
-    const code = extractInviteCode(match);
-    if (code && guildLinks.includes(code)) {
-      return true;
+  if (guildLinks && guildLinks.length > 0) {
+    for (const code of inviteCodes) {
+      if (guildLinks.includes(code)) {
+        return true;
+      }
     }
   }
 
@@ -603,14 +599,15 @@ client.on(Events.MessageCreate, async (message) => {
     if (data.exemptUsers[guildId]?.includes(userId)) return;
 
     // --- Check for invite links ---
-    if (containsInviteLink(message.content)) {
-      // Check if it's whitelisted (env var or guild-specific)
-      if (containsWhitelistedInvite(message.content, guildId)) {
-        // Whitelisted, allow it to pass through
-        console.log(`✓ User ${message.author.tag} posted whitelisted invite link`);
+    const inviteCodes = getInviteCodes(message.content);
+    if (inviteCodes.length > 0) {
+      // Has invite links - check if any are whitelisted
+      if (hasWhitelistedInvite(inviteCodes, guildId)) {
+        // Whitelisted - allow message to stay
+        console.log(`✓ User ${message.author.tag} posted whitelisted invite link: ${inviteCodes.join(', ')}`);
         return;
       } else {
-        // Not whitelisted, timeout
+        // Not whitelisted - delete and timeout
         await handleInviteLink(message, member);
         return;
       }
