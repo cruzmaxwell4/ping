@@ -30,6 +30,7 @@ const data = {
   userWarnings: {},
   exemptUsers: {},
   allowedUsers: {},
+  allowedRoles: {},
 };
 
 // Store timeout targets for button interactions: { timeoutId: { userId, guildId } }
@@ -126,6 +127,26 @@ client.once(Events.ClientReady, async (readyClient) => {
         option
           .setName('user')
           .setDescription('The user to allow')
+          .setRequired(true)
+      )
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+    new SlashCommandBuilder()
+      .setName('allowrole')
+      .setDescription('Allow a role to ping owner and protected roles without warnings (owner only)')
+      .addRoleOption((option) =>
+        option
+          .setName('role')
+          .setDescription('The role to allow')
+          .setRequired(true)
+      )
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+    new SlashCommandBuilder()
+      .setName('allowperson')
+      .setDescription('Allow a person to ping owner and protected roles without warnings (owner only)')
+      .addUserOption((option) =>
+        option
+          .setName('user')
+          .setDescription('The person to allow')
           .setRequired(true)
       )
       .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
@@ -340,7 +361,75 @@ client.on(Events.InteractionCreate, async (interaction) => {
         const embed = new EmbedBuilder()
           .setColor(0x3498db)
           .setTitle('Person Allowed')
-          .setDescription(`User is now allowed to ping owner and roles freely.`)
+          .setDescription(`${user.username} is now allowed to ping owner and protected roles freely without warnings.`)
+          .setTimestamp();
+        await interaction.reply({ embeds: [embed] });
+      }
+
+      saveData();
+    } else if (interaction.commandName === 'allowrole') {
+      if (interaction.user.id !== OWNER_ID) {
+        return interaction.reply({ content: "Only the server owner can use this command.", ephemeral: true });
+      }
+
+      const role = interaction.options.getRole('role');
+      const guildId = interaction.guildId;
+
+      if (!data.allowedRoles[guildId]) {
+        data.allowedRoles[guildId] = [];
+      }
+
+      const roles = data.allowedRoles[guildId];
+      const idx = roles.indexOf(role.id);
+
+      if (idx > -1) {
+        roles.splice(idx, 1);
+        const embed = new EmbedBuilder()
+          .setColor(0xff6b6b)
+          .setTitle('Role Allowance Removed')
+          .setDescription(`${role.name} is no longer allowed to ping owner and protected roles freely.`)
+          .setTimestamp();
+        await interaction.reply({ embeds: [embed] });
+      } else {
+        roles.push(role.id);
+        const embed = new EmbedBuilder()
+          .setColor(0x3498db)
+          .setTitle('Role Allowed')
+          .setDescription(`Members of ${role.name} are now allowed to ping owner and protected roles freely without warnings.`)
+          .setTimestamp();
+        await interaction.reply({ embeds: [embed] });
+      }
+
+      saveData();
+    } else if (interaction.commandName === 'allowperson') {
+      if (interaction.user.id !== OWNER_ID) {
+        return interaction.reply({ content: "Only the server owner can use this command.", ephemeral: true });
+      }
+
+      const user = interaction.options.getUser('user');
+      const guildId = interaction.guildId;
+
+      if (!data.allowedUsers[guildId]) {
+        data.allowedUsers[guildId] = [];
+      }
+
+      const users = data.allowedUsers[guildId];
+      const idx = users.indexOf(user.id);
+
+      if (idx > -1) {
+        users.splice(idx, 1);
+        const embed = new EmbedBuilder()
+          .setColor(0xff6b6b)
+          .setTitle('Person Allowance Removed')
+          .setDescription(`${user.username} is no longer allowed to ping owner and protected roles freely.`)
+          .setTimestamp();
+        await interaction.reply({ embeds: [embed] });
+      } else {
+        users.push(user.id);
+        const embed = new EmbedBuilder()
+          .setColor(0x3498db)
+          .setTitle('Person Allowed')
+          .setDescription(`${user.username} is now allowed to ping owner and protected roles freely without warnings.`)
           .setTimestamp();
         await interaction.reply({ embeds: [embed] });
       }
@@ -403,6 +492,17 @@ client.on(Events.MessageCreate, async (message) => {
     // Check if in accept channel
     const isInAcceptChannel = data.acceptChannels[guildId]?.includes(channelId);
     if (isInAcceptChannel && message.mentions.roles.has(OWNER_ROLE_ID)) {
+      return;
+    }
+
+    // Check if user is in an allowed role
+    const isInAllowedRole = data.allowedRoles[guildId]?.some(roleId => member.roles.cache.has(roleId));
+
+    // Check if user is in allowed users list
+    const isAllowedUser = data.allowedUsers[guildId]?.includes(userId);
+
+    // If user is allowed (by role or user), skip all warnings
+    if (isInAllowedRole || isAllowedUser) {
       return;
     }
 
@@ -470,6 +570,8 @@ client.on(Events.MessageCreate, async (message) => {
           `\`/refreshwarnings <user>\` — clear a user's warnings (owner only)`,
           `\`/setperson <user>\` — exempt a user from all warnings (owner only)`,
           `\`/personallowed <user>\` — allow user to ping owner/roles freely`,
+          `\`/allowrole <role>\` — allow a role to ping freely (owner only)`,
+          `\`/allowperson <user>\` — allow a person to ping freely (owner only)`,
         ].join('\n'),
       );
     } else if (command === 'untimeout') {
@@ -489,6 +591,8 @@ async function handleWarning(message, member, reason) {
 
   if (data.exemptUsers[guildId]?.includes(userId)) return;
   if (data.allowedUsers[guildId]?.includes(userId)) return;
+  if (data.allowedRoles[guildId]?.some(roleId => member.roles.cache.has(roleId))) return;
+
   const warningKey = `${guildId}:${userId}:${reason}`;
 
   // Initialize user warnings if needed
